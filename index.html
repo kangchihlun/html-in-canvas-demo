@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Re-inforce Main Menu - HTML in Canvas</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050d12;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* 畫布鋪滿全螢幕，負責渲染背景與 3D 變換後的 DOM */
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* 用於 HTML-in-Canvas 的隱藏 DOM 容器 */
+        /* 它存在於 DOM 樹中以接收事件，但視覺渲染由 Canvas 接管 */
+        #html-canvas-source {
+            position: absolute;
+            right: 10%;
+            top: 15%;
+            width: 400px;
+            height: 70px;
+            opacity: 0;
+            pointer-events: auto;
+            z-index: 2;
+            mix-blend-mode: screen;
+            /* bloom：多層 drop-shadow 模擬光從邊緣向外擴散 */
+            filter:
+                drop-shadow(0 0 6px  rgba(0, 200, 255, 0.7))
+                drop-shadow(0 0 18px rgba(0, 180, 216, 0.45))
+                drop-shadow(0 0 45px rgba(0, 150, 200, 0.2));
+        }
+
+        /* 選單 Panel 樣式 */
+        .menu-panel {
+            width: 100%;
+            background: rgba(0, 40, 60, 0.25);
+            border: 4px solid rgba(0, 210, 255, 0.3);
+            box-shadow: 0 0 25px rgba(0, 180, 216, 0.15), inset 0 0 15px rgba(0, 180, 216, 0.1);
+            padding: 30px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            border-radius: 4px;
+        }
+
+        /* 選單按鈕基礎樣式 - 還原圖片中的霓虹科技感 */
+        .menu-btn {
+            width: 100%;
+            padding: 14px 20px;
+            background: rgba(0, 20, 35, 0.6);
+            border: 1px solid rgba(0, 180, 216, 0.4);
+            color: #d1f4ff;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-align: center;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            clip-path: polygon(0% 0%, 95% 0%, 100% 25%, 100% 100%, 5% 100%, 0% 75%);
+        }
+
+        /* 滑鼠懸停（選中高亮藍色）與點擊效果 */
+        .menu-btn:hover {
+            background: rgba(0, 180, 216, 0.25);
+            color: #ffffff;
+            border-color: #00f0ff;
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.6), inset 0 0 10px rgba(0, 240, 255, 0.3);
+            text-shadow: 0 0 8px #00f0ff;
+            transform: scale(1.02);
+        }
+
+        .menu-btn:active {
+            background: rgba(0, 240, 255, 0.4);
+            transform: scale(0.98);
+        }
+
+        /* 選中狀態：強外光暈突顯 */
+        .menu-btn.selected {
+            background: rgba(0, 180, 216, 0.22);
+            color: #ffffff;
+            border-color: #00f0ff;
+            box-shadow:
+                0 0 12px  rgba(0, 240, 255, 0.9),
+                0 0 30px  rgba(0, 240, 255, 0.55),
+                0 0 60px  rgba(0, 240, 255, 0.25),
+                0 0 100px rgba(0, 200, 255, 0.12),
+                inset 0 0 12px rgba(0, 240, 255, 0.3);
+            text-shadow: 0 0 8px #00f0ff, 0 0 22px rgba(0, 240, 255, 0.65);
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="html-canvas-source">
+        <div class="menu-panel" id="targetPanel">
+            <div class="menu-btn">Campaign</div>
+            <div class="menu-btn">Multiplayer</div>
+            <div class="menu-btn">Co-Op</div>
+            <div class="menu-btn">Settings</div>
+            <div class="menu-btn">Credits</div>
+            <div class="menu-btn">Quit Game</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d'); // 註：新版 Chrome 在 2D/WebGL 均擴充了 DOM 繪製能力
+        const menuSource = document.getElementById('html-canvas-source');
+        const targetPanel = document.getElementById('targetPanel');
+
+        // 載入您生成的精美背景圖
+        const bgImage = new Image();
+        bgImage.src = 'bg.png';
+
+        // 3D 旋轉與互動變數
+        const BASE_TRANSLATE_Y = 10; // 預設 Y 軸位移（向下偏移）
+        const BASE_ROTATE_Y = -20; // 預設負向 Y 軸旋轉，製造透視感
+        let rotateY = BASE_ROTATE_Y; // 當前 Y 軸旋轉角度
+        let rotateX = 0; // 當前 X 軸旋轉角度
+        let targetRotateY = BASE_ROTATE_Y;
+        let targetRotateX = 0;
+
+        // 螢幕尺寸自適應
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // 監聽滑鼠移動，計算選單面板應傾斜的角度
+        window.addEventListener('mousemove', (e) => {
+            // 獲取選單面板在螢幕上的中心點
+            const rect = menuSource.getBoundingClientRect();
+            const panelCenterX = rect.left + rect.width / 2;
+            const panelCenterY = rect.top + rect.height / 2;
+
+            // 計算滑鼠與面板中心的相對距離 (-1 到 1)
+            const deltaX = (e.clientX - panelCenterX) / (window.innerWidth / 2);
+            const deltaY = (e.clientY - panelCenterY) / (window.innerHeight / 2);
+
+            // 設定目標旋轉角度，在預設基準上疊加互動偏移
+            targetRotateY = BASE_ROTATE_Y + deltaX * 10;
+            targetRotateX = -deltaY * 10;
+        });
+
+        // 模擬滑鼠移出時歸位至預設透視角度
+        window.addEventListener('mouseleave', () => {
+            targetRotateX = 0;
+            targetRotateY = BASE_ROTATE_Y;
+        });
+
+        // 核心渲染循環 (Render Loop)
+        function render() {
+            // 清空畫布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. 繪製高清背景圖 (自動 Cover 縮放)
+            if (bgImage.complete && bgImage.naturalWidth !== 0) {
+                const scale = Math.max(canvas.width / bgImage.width, canvas.height / bgImage.height);
+                const x = (canvas.width / 2) - (bgImage.width / 2) * scale;
+                const y = (canvas.height / 2) - (bgImage.height / 2) * scale;
+                ctx.drawImage(bgImage, x, y, bgImage.width * scale, bgImage.height * scale);
+            } else {
+                // 圖片加載前的備用深色背景
+                ctx.fillStyle = "#050d12";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // 2. 緩動動畫 (Smoothing) 讓旋轉更流暢
+            rotateY += (targetRotateY - rotateY) * 0.1;
+            rotateX += (targetRotateX - rotateX) * 0.1;
+
+            // 3. 準備 3D 空間矩陣渲染選單 Panel
+            ctx.save();
+            
+            // 將畫布原點移動到右側選單的預期中心點
+            const panelRect = menuSource.getBoundingClientRect();
+            const renderX = panelRect.left + panelRect.width / 2;
+            const renderY = panelRect.top + panelRect.height / 2 + BASE_TRANSLATE_Y;
+            
+            ctx.translate(renderX, renderY);
+
+            // 實作簡單的 3D 透視與投影矩陣模擬 (基於 HTML-in-Canvas 的 3D 擴充屬性)
+            // 在不支援此高度實驗性 API 的瀏覽器中，我們透過 Canvas 2D 矩陣形變模擬傾斜
+            const radX = rotateX * Math.PI / 180;
+            const radY = rotateY * Math.PI / 180;
+            
+            // 應用 3D 變換剪切與縮放 (透視投影模擬)
+            ctx.transform(Math.cos(radY), Math.sin(radX) * Math.sin(radY), 0, Math.cos(radX), 0, 0);
+            
+            // 將原點移回左上角以供 DOM 繪製
+            ctx.translate(-panelRect.width / 2, -panelRect.height / 2);
+
+            // 4. 【核心 HTML-in-Canvas API】 直接將 DOM 元素繪製到畫布中
+            // 如果瀏覽器支援原生的實驗性 drawDOMElement
+            if (typeof ctx.drawDOMElement === 'function') {
+                // 正常 additive pass
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.drawDOMElement(targetPanel);
+
+                // bloom pass：模糊版本疊回去，柔化邊緣
+                ctx.save();
+                ctx.filter = 'blur(14px)';
+                ctx.globalAlpha = 0.55;
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.drawDOMElement(targetPanel);
+                ctx.restore();
+
+                ctx.globalCompositeOperation = 'source-over';
+            } else {
+                // 備用方案：在當前尚未完全啟用此 API 的環境下，
+                // 我們透過 CSS 3D transform 同步控制源 DOM 達到完美動態視覺，並由 Canvas 負責背景處理
+                menuSource.style.opacity = "1";
+                menuSource.style.transform = `translateY(${BASE_TRANSLATE_Y}px) perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+                menuSource.style.transformOrigin = "center center";
+            }
+
+            ctx.restore();
+
+            requestAnimationFrame(render);
+        }
+
+        // 綁定選單點擊事件，追蹤選中按鈕
+        let selectedBtn = null;
+        const buttons = document.querySelectorAll('.menu-btn');
+        buttons.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                if (selectedBtn) selectedBtn.classList.remove('selected');
+                selectedBtn = e.currentTarget;
+                selectedBtn.classList.add('selected');
+                console.log(`點擊了選單：${e.target.innerText}`);
+            });
+        });
+
+        // 開始運行
+        bgImage.onload = () => {
+            render();
+        };
+        // 防止圖片加載失敗時卡死
+        setTimeout(render, 500);
+
+    </script>
+</body>
+</html>
